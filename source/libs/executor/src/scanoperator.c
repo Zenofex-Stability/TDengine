@@ -391,7 +391,7 @@ static int32_t loadDataBlock(SOperatorInfo* pOperator, STableScanBase* pTableSca
     pAPI->tsdReader.tsdReaderReleaseDataBlock(pTableScanInfo->dataReader);
     return code;
   } else if (*status == FUNC_DATA_REQUIRED_SMA_LOAD) {
-    pCost->loadBlockStatis += 1;
+    pCost->smaLoadBlocks += 1;
     loadSMA = true;  // mark the operation of load sma;
     bool success = true;
     code = doLoadBlockSMA(pTableScanInfo, pBlock, pTaskInfo, &success);
@@ -479,8 +479,7 @@ static int32_t loadDataBlock(SOperatorInfo* pOperator, STableScanBase* pTableSca
     return TSDB_CODE_SUCCESS;
   }
 
-  pCost->totalCheckedRows += pBlock->info.rows;
-  pCost->loadBlocks += 1;
+  pCost->checkRows += pBlock->info.rows;
 
   SSDataBlock* p = NULL;
   code = pAPI->tsdReader.tsdReaderRetrieveDataBlock(pTableScanInfo->dataReader, &p);
@@ -497,10 +496,9 @@ static int32_t loadDataBlock(SOperatorInfo* pOperator, STableScanBase* pTableSca
   pCost->totalRows -= pBlock->info.rows;
 
   if (pOperator->exprSupp.pFilterInfo != NULL) {
+    int64_t st = taosGetTimestampUs();
     code = doFilter(pBlock, pOperator->exprSupp.pFilterInfo, &pTableScanInfo->matchInfo, NULL);
     QUERY_CHECK_CODE(code, lino, _end);
-
-    int64_t st = taosGetTimestampUs();
     double  el = (taosGetTimestampUs() - st) / 1000.0;
     pTableScanInfo->readRecorder.filterTime += el;
 
@@ -1052,9 +1050,7 @@ static int32_t doTableScanImplNext(SOperatorInfo* pOperator, SSDataBlock** ppRes
     }
 
     pOperator->resultInfo.totalRows = pTableScanInfo->base.readRecorder.totalRows;
-    pTableScanInfo->base.readRecorder.elapsedTime += (taosGetTimestampUs() - st) / 1000.0;
-
-    pOperator->cost.totalCost = pTableScanInfo->base.readRecorder.elapsedTime;
+    pOperator->cost.totalCost = (taosGetTimestampUs() - st) / 1000.0;
     pBlock->info.scanFlag = pTableScanInfo->base.scanFlag;
 
     (*ppRes) = pBlock;
@@ -2355,8 +2351,9 @@ static int32_t getTableScannerExecInfo(struct SOperatorInfo* pOptr, void** pOptr
   if (!pRecorder) {
     return terrno;
   }
-  STableScanInfo* pTableScanInfo = pOptr->info;
+  const STableScanInfo* pTableScanInfo = pOptr->info;
   *pRecorder = pTableScanInfo->base.readRecorder;
+  pTableScanInfo->base.readerAPI.tsdReaderSetExecInfo(pTableScanInfo->base.dataReader, pRecorder);
   *pOptrExplain = pRecorder;
   *len = sizeof(SFileBlockLoadRecorder);
   return 0;
@@ -4986,7 +4983,6 @@ static int32_t getBlockForTableMergeScan(void* param, SSDataBlock** ppBlock) {
     pBlock->info.id.groupId = tableListGetTableGroupId(pInfo->base.pTableListInfo, pBlock->info.id.uid);
 
     pOperator->resultInfo.totalRows += pBlock->info.rows;
-    pInfo->base.readRecorder.elapsedTime += (taosGetTimestampUs() - st) / 1000.0;
     *ppBlock = pBlock;
 
     return code;
