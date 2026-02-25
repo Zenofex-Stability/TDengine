@@ -700,6 +700,7 @@ int32_t virtualTableGetNext(SOperatorInfo* pOperator, SSDataBlock** pResBlock) {
   SVirtualScanMergeOperatorInfo* pInfo = pOperator->info;
   SVirtualTableScanInfo*         pVirtualScanInfo = &pInfo->virtualScanInfo;
   SExecTaskInfo*                 pTaskInfo = pOperator->pTaskInfo;
+  recordOpExecBegin(pOperator);
 
   if (pOperator->status == OP_EXEC_DONE && !pOperator->pOperatorGetParam) {
     *pResBlock = NULL;
@@ -755,6 +756,7 @@ int32_t virtualTableGetNext(SOperatorInfo* pOperator, SSDataBlock** pResBlock) {
     }
   }
 
+  recordOpExecEnd(pOperator, *pResBlock != NULL && (*pResBlock)->info.rows > 0);
   return code;
 _return:
   qError("%s failed at line %d since %s", __func__, lino, tstrerror(code));
@@ -918,6 +920,7 @@ int32_t createVirtualTableMergeOperatorInfo(SOperatorInfo** pDownstream, int32_t
 
   QUERY_CHECK_NULL(pInfo, code, lino, _return, terrno)
   QUERY_CHECK_NULL(pOperator, code, lino, _return, terrno)
+  recordOpCreateTime(pOperator, pTaskInfo);
 
   pOperator->pPhyNode = pVirtualScanPhyNode;
 
