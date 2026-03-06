@@ -307,8 +307,8 @@ static int32_t qExplainBufAppendExecInfo(SArray *pExecInfo, char *tbuf,
                       (double)execInfo.numOfRows * 100.0 / (double)execInfo.inputRows : 100.0;
 
   if (nodeNum == 1) {
-    EXPLAIN_ROW_APPEND(EXPLAIN_EXECINFO_FORMAT, execInfo.execFirstRow,
-                       execInfo.execLastRow, execInfo.numOfRows);
+    EXPLAIN_ROW_APPEND(EXPLAIN_EXECINFO_FORMAT, EXPLAIN_CONVERT_TS_US_TO_MS(execInfo.execFirstRow),
+                       EXPLAIN_CONVERT_TS_US_TO_MS(execInfo.execLastRow), execInfo.numOfRows);
   } else if (nodeNum > 1) {
     EXPLAIN_ROW_APPEND(EXPLAIN_EXECINFO_FORMAT_EXT,
                        EXPLAIN_CONVERT_TS_US_TO_MS(execInfo.execFirstRow) / nodeNum,
@@ -320,28 +320,6 @@ static int32_t qExplainBufAppendExecInfo(SArray *pExecInfo, char *tbuf,
   }
 
   *len = tlen;
-  return TSDB_CODE_SUCCESS;
-}
-
-static int32_t qExplainBufAppendVerboseExecInfo(SArray *pExecInfo, char *tbuf, int32_t *len) {
-  int32_t          tlen = 0;
-  bool             gotVerbose = false;
-  int32_t          nodeNum = taosArrayGetSize(pExecInfo);
-  SExplainExecInfo maxExecInfo = {0};
-
-  for (int32_t i = 0; i < nodeNum; ++i) {
-    SExplainExecInfo *execInfo = taosArrayGet(pExecInfo, i);
-    if (execInfo->verboseInfo) {
-      gotVerbose = true;
-    }
-  }
-
-  if (gotVerbose) {
-    EXPLAIN_ROW_APPEND("exec verbose info");
-  }
-
-  *len = tlen;
-
   return TSDB_CODE_SUCCESS;
 }
 
@@ -460,6 +438,11 @@ static int32_t compareExecInfo(const void* p1, const void* p2) {
 
 static int32_t qExplainExecAnalyze(const SExplainResNode *pResNode,
                                    SExplainCtx *ctx, int32_t level) {
+  if (NULL == pResNode || NULL == pResNode->pExecInfo ||
+      taosArrayGetSize(pResNode->pExecInfo) == 0) {
+    return TSDB_CODE_SUCCESS;
+  }
+
   bool    isVerboseLine = true;
   char   *tbuf = ctx->tbuf;
   int32_t tlen = 0;
@@ -747,14 +730,6 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
 
-        if (pResNode->pExecInfo) {
-          QRY_ERR_RET(qExplainBufAppendVerboseExecInfo(pResNode->pExecInfo, tbuf, &tlen));
-          if (tlen) {
-            EXPLAIN_ROW_END();
-            QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-          }
-        }
-
         if (pTagScanNode->scan.node.pConditions) {
           EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
           QRY_ERR_RET(nodesNodeToSQL(pTagScanNode->scan.node.pConditions, tbuf + VARSTR_HEADER_SIZE,
@@ -770,6 +745,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
           EXPLAIN_ROW_END();
           QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
         }
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -803,14 +780,6 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
 
-        if (pResNode->pExecInfo) {
-          QRY_ERR_RET(qExplainBufAppendVerboseExecInfo(pResNode->pExecInfo, tbuf, &tlen));
-          if (tlen) {
-            EXPLAIN_ROW_END();
-            QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-          }
-        }
-
         if (pVirtualTableScanNode->scan.node.pConditions) {
           EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
           QRY_ERR_RET(nodesNodeToSQL(pVirtualTableScanNode->scan.node.pConditions, tbuf + VARSTR_HEADER_SIZE,
@@ -818,6 +787,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
           EXPLAIN_ROW_END();
           QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
         }
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -894,10 +865,7 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
           QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
         }
 
-        /* table scan Exec analyze information */
-        if (pResNode->pExecInfo) {
-          QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
-        }
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
 
       if (EXPLAIN_MODE_ANALYZE == ctx->mode && pResNode->pExecInfo) {
@@ -944,6 +912,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
           EXPLAIN_ROW_END();
           QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
         }
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -992,6 +962,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
           EXPLAIN_ROW_END();
           QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
         }
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -1105,6 +1077,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
           EXPLAIN_ROW_END();
           QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
         }
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -1156,6 +1130,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_NEW(level + 1, EXPLAIN_MERGEBLOCKS_FORMAT, pAggNode->mergeDataBlock? "True":"False");
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -1194,6 +1170,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
           EXPLAIN_ROW_END();
           QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
         }
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -1261,6 +1239,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
             QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
           }
         }
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
 
       for (int32_t i = pExchNode->srcStartGroupId; i <= pExchNode->srcEndGroupId; ++i) {
@@ -1340,6 +1320,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
           EXPLAIN_ROW_END();
           QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
         }
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -1403,6 +1385,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_NEW(level + 1, EXPLAIN_MERGEBLOCKS_FORMAT, pIntNode->window.mergeDataBlock? "True":"False");
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -1462,6 +1446,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_NEW(level + 1, EXPLAIN_MERGEBLOCKS_FORMAT, pIntNode->window.mergeDataBlock? "True":"False");
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -1524,6 +1510,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
           EXPLAIN_ROW_END();
           QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
         }
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -1564,6 +1552,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
           EXPLAIN_ROW_END();
           QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
         }
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -1606,6 +1596,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
           EXPLAIN_ROW_END();
           QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
         }
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -1648,6 +1640,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
           EXPLAIN_ROW_END();
           QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
         }
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -1741,6 +1735,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
           EXPLAIN_ROW_END();
           QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
         }
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -1782,6 +1778,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
           EXPLAIN_ROW_END();
           QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
         }
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -1884,6 +1882,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
           EXPLAIN_ROW_END();
           QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
         }
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -1955,6 +1955,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
           EXPLAIN_ROW_END();
           QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
         }
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -2004,6 +2006,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
           EXPLAIN_ROW_END();
           QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
         }
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -2071,6 +2075,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
           EXPLAIN_ROW_END();
           QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
         }
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -2101,6 +2107,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -2181,6 +2189,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
           EXPLAIN_ROW_END();
           QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
         }
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -2224,6 +2234,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
           EXPLAIN_ROW_END();
           QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
         }
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -2312,6 +2324,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
           EXPLAIN_ROW_END();
           QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
         }
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -2337,6 +2351,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_NEW(level + 1, EXPLAIN_COUNT_SLIDING_FORMAT, pCountNode->windowSliding);
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -2385,6 +2401,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_NEW(level + 1, EXPLAIN_MERGEBLOCKS_FORMAT, pExternal->window.mergeDataBlock? "True":"False");
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -2433,6 +2451,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_NEW(level + 1, EXPLAIN_MERGEBLOCKS_FORMAT, pExternal->window.mergeDataBlock? "True":"False");
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
@@ -2477,6 +2497,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_NEW(level + 1, EXPLAIN_MERGEBLOCKS_FORMAT, pExternal->window.mergeDataBlock? "True":"False");
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
+
+        QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
       break;
     }
