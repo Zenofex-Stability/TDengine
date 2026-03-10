@@ -373,6 +373,31 @@ static int32_t qExplainResAppendRow(SExplainCtx *ctx, char *tbuf, int32_t len, i
   return TSDB_CODE_SUCCESS;
 }
 
+static int32_t qExplainAppendFilterRow(SExplainCtx *ctx, int32_t level,
+                                       SNode *pConditions, int32_t *pLen,
+                                       const double *pFilterEfficiency) {
+  if (NULL == pConditions) {
+    return TSDB_CODE_SUCCESS;
+  }
+
+  int32_t tlen = *pLen;
+  char   *tbuf = ctx->tbuf;
+  bool    isVerboseLine = true;
+
+  EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
+  EXPLAIN_ROW_APPEND(EXPLAIN_FILTER_CONDITIONS_FORMAT);
+  QRY_ERR_RET(nodesNodeToSQL(pConditions, tbuf + VARSTR_HEADER_SIZE,
+                             TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
+  if (pFilterEfficiency != NULL) {
+    EXPLAIN_ROW_APPEND(EXPLAIN_BLANK_FORMAT);
+    EXPLAIN_ROW_APPEND(EXPLAIN_FILTER_EFFICIENCY_FORMAT, *pFilterEfficiency);
+  }
+  EXPLAIN_ROW_END();
+
+  *pLen = tlen;
+  return qExplainResAppendRow(ctx, tbuf, tlen, level + 1);
+}
+
 static uint8_t qExplainGetIntervalPrecision(SIntervalPhysiNode *pIntNode) {
   return ((SColumnNode *)pIntNode->window.pTspk)->node.resType.precision;
 }
@@ -727,7 +752,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
   }
 
   int32_t level = *pLevel;
-  double filterEfficiency;
+  double filterEfficiency = 100;
+  bool   hasEfficiency = ctx->mode == EXPLAIN_MODE_ANALYZE && pResNode->pExecInfo;
 
   switch (pNode->type) {
     case QUERY_NODE_PHYSICAL_PLAN_TAG_SCAN: {
@@ -758,16 +784,12 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
 
-        if (pTagScanNode->scan.node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pTagScanNode->scan.node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pTagScanNode->scan.node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         if (qExplainCouldApplyTagIndex(pResNode->pPlan)) {
           EXPLAIN_ROW_NEW(level + 1, EXPLAIN_TAG_INDEX_FORMAT);
+          EXPLAIN_ROW_APPEND(EXPLAIN_FILTER_CONDITIONS_FORMAT);
           QRY_ERR_RET(nodesNodeToSQL(pResNode->pPlan->pTagIndexCond, tbuf + VARSTR_HEADER_SIZE,
                                      TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
           EXPLAIN_ROW_END();
@@ -808,13 +830,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
 
-        if (pVirtualTableScanNode->scan.node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pVirtualTableScanNode->scan.node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pVirtualTableScanNode->scan.node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
@@ -874,19 +891,12 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
           QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
         }
 
-        if (pTblScanNode->scan.node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          EXPLAIN_ROW_APPEND(EXPLAIN_FILTER_CONDITIONS_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pTblScanNode->scan.node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_APPEND(EXPLAIN_BLANK_FORMAT);
-          EXPLAIN_ROW_APPEND(EXPLAIN_FILTER_EFFICIENCY_FORMAT, filterEfficiency);
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pTblScanNode->scan.node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         if (qExplainCouldApplyTagIndex(pResNode->pPlan)) {
           EXPLAIN_ROW_NEW(level + 1, EXPLAIN_TAG_INDEX_FORMAT);
+          EXPLAIN_ROW_APPEND(EXPLAIN_FILTER_CONDITIONS_FORMAT);
           QRY_ERR_RET(nodesNodeToSQL(pResNode->pPlan->pTagIndexCond, tbuf + VARSTR_HEADER_SIZE,
                                      TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
           EXPLAIN_ROW_END();
@@ -933,13 +943,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
 
-        if (pSTblScanNode->scan.node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pSTblScanNode->scan.node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pSTblScanNode->scan.node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
@@ -983,13 +988,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
 
-        if (pPrjNode->node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pPrjNode->node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pPrjNode->node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
@@ -1055,13 +1055,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
           QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
         }
 
-        if (pJoinNode->node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pJoinNode->node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pJoinNode->node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         if (NULL != pJoinNode->pPrimKeyCond) {
           EXPLAIN_ROW_NEW(level + 1, EXPLAIN_PRIM_CONDITIONS_FORMAT);
@@ -1147,13 +1142,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
 
-        if (pAggNode->node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pAggNode->node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pAggNode->node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         EXPLAIN_ROW_NEW(level + 1, EXPLAIN_MERGEBLOCKS_FORMAT, pAggNode->mergeDataBlock? "True":"False");
         EXPLAIN_ROW_END();
@@ -1191,13 +1181,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
 
-        if (pIndefNode->node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pIndefNode->node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pIndefNode->node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
@@ -1251,13 +1236,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
 
-        if (pExchNode->node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pExchNode->node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pExchNode->node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         if (pResNode->pExecInfo) {
           const SExplainExecInfo *execInfo = taosArrayGet(pResNode->pExecInfo, 0);
@@ -1359,13 +1339,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
 
-        if (pSortNode->node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pSortNode->node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pSortNode->node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
@@ -1420,13 +1395,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
 
-        if (pIntNode->window.node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pIntNode->window.node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pIntNode->window.node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         EXPLAIN_ROW_NEW(level + 1, EXPLAIN_MERGEBLOCKS_FORMAT, pIntNode->window.mergeDataBlock? "True":"False");
         EXPLAIN_ROW_END();
@@ -1481,13 +1451,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
 
-        if (pIntNode->window.node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pIntNode->window.node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pIntNode->window.node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         EXPLAIN_ROW_NEW(level + 1, EXPLAIN_MERGEBLOCKS_FORMAT, pIntNode->window.mergeDataBlock? "True":"False");
         EXPLAIN_ROW_END();
@@ -1549,13 +1514,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
 
-        if (pFillNode->node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pFillNode->node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pFillNode->node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
@@ -1591,13 +1551,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
 
-        if (pSessNode->window.node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pSessNode->window.node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pSessNode->window.node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
@@ -1635,13 +1590,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
 
-        if (pStateNode->window.node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pStateNode->window.node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pStateNode->window.node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
@@ -1679,13 +1629,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
 
-        if (pPartNode->node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pPartNode->node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pPartNode->node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
@@ -1774,13 +1719,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
           QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
         }
 
-        if (pMergeNode->node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pMergeNode->node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pMergeNode->node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
@@ -1817,13 +1757,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
 
-        if (pDistScanNode->node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pDistScanNode->node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pDistScanNode->node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
@@ -1860,16 +1795,12 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
 
-        if (pLastRowNode->scan.node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pLastRowNode->scan.node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pLastRowNode->scan.node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         if (qExplainCouldApplyTagIndex(pResNode->pPlan)) {
           EXPLAIN_ROW_NEW(level + 1, EXPLAIN_TAG_INDEX_FORMAT);
+          EXPLAIN_ROW_APPEND(EXPLAIN_FILTER_CONDITIONS_FORMAT);
           QRY_ERR_RET(nodesNodeToSQL(pResNode->pPlan->pTagIndexCond, tbuf + VARSTR_HEADER_SIZE,
                                      TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
           EXPLAIN_ROW_END();
@@ -1921,13 +1852,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
 
-        if (pLastRowNode->scan.node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pLastRowNode->scan.node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pLastRowNode->scan.node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
@@ -1994,13 +1920,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
 
-        if (pSortNode->node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pSortNode->node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pSortNode->node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
@@ -2045,13 +1966,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
 
-        if (pIntNode->window.node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pIntNode->window.node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pIntNode->window.node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
@@ -2114,13 +2030,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
 
-        if (pInterpNode->node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pInterpNode->node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pInterpNode->node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
@@ -2272,14 +2183,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_APPEND_SLIMIT(pGroupCache->node.pSlimit);
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-
-        if (pGroupCache->node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pGroupCache->node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pGroupCache->node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
@@ -2363,13 +2268,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
 
-        if (pDyn->node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pDyn->node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pDyn->node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         QRY_ERR_RET(qExplainExecAnalyze(pResNode, ctx, level));
       }
@@ -2436,13 +2336,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
 
-        if (pExternal->window.node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pExternal->window.node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pExternal->window.node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         EXPLAIN_ROW_NEW(level + 1, EXPLAIN_MERGEBLOCKS_FORMAT, pExternal->window.mergeDataBlock? "True":"False");
         EXPLAIN_ROW_END();
@@ -2486,13 +2381,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
 
-        if (pExternal->window.node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pExternal->window.node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pExternal->window.node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         EXPLAIN_ROW_NEW(level + 1, EXPLAIN_MERGEBLOCKS_FORMAT, pExternal->window.mergeDataBlock? "True":"False");
         EXPLAIN_ROW_END();
@@ -2532,13 +2422,8 @@ static int32_t qExplainResNodeToRowsImpl(SExplainResNode *pResNode, SExplainCtx 
         EXPLAIN_ROW_END();
         QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
 
-        if (pExternal->window.node.pConditions) {
-          EXPLAIN_ROW_NEW(level + 1, EXPLAIN_FILTER_FORMAT);
-          QRY_ERR_RET(nodesNodeToSQL(pExternal->window.node.pConditions, tbuf + VARSTR_HEADER_SIZE,
-                                     TSDB_EXPLAIN_RESULT_ROW_SIZE, &tlen));
-          EXPLAIN_ROW_END();
-          QRY_ERR_RET(qExplainResAppendRow(ctx, tbuf, tlen, level + 1));
-        }
+        QRY_ERR_RET(qExplainAppendFilterRow(ctx, level, pExternal->window.node.pConditions,
+                                            &tlen, hasEfficiency ? &filterEfficiency : NULL));
 
         EXPLAIN_ROW_NEW(level + 1, EXPLAIN_MERGEBLOCKS_FORMAT, pExternal->window.mergeDataBlock? "True":"False");
         EXPLAIN_ROW_END();
